@@ -2,19 +2,22 @@ package turnstilene
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/tarm/serial"
 )
 
 //DeviceIO interface to deviceIO
 type DeviceIO interface {
-	SendFrame(funtion, bank byte, data []byte) error
+	SendFrame(funtion, bank byte, data []byte, len int) error
 	ReadData(bank byte, len int) ([]byte, error)
+	SetAddress(addres byte)
 }
 
 type deviceIO struct {
 	address byte
 	port    *serial.Port
+	mux     sync.Mutex
 }
 
 //NewDeviceIO create new deviceIO
@@ -37,9 +40,10 @@ func csum(data []byte) byte {
 	return csum
 }
 
-func (d *deviceIO) SendFrame(funtion, bank byte, data []byte) error {
+func (d *deviceIO) SendFrame(funtion, bank byte, data []byte, len int) error {
 	//trama = [@address, funtion, bank, len]
-	frame := []byte{d.address, funtion, bank}
+
+	frame := []byte{d.address, funtion, bank, byte(len)}
 	if data != nil {
 		frame = append(frame, data...)
 	}
@@ -47,6 +51,7 @@ func (d *deviceIO) SendFrame(funtion, bank byte, data []byte) error {
 	xsum := csum(frame)
 	frame = append(frame, xsum)
 	frame = append(frame, byte(0xFC))
+	// fmt.Printf("sendframe: [% X]\n", frame)
 	_, err := d.port.Write(frame)
 	if err != nil {
 		return err
@@ -54,8 +59,25 @@ func (d *deviceIO) SendFrame(funtion, bank byte, data []byte) error {
 	return nil
 }
 
-func (d *deviceIO) ReadData(bank byte, len int) ([]byte, error) {
-	d.SendFrame(0x10, bank, nil)
+func verify(data []byte) error {
+	if data[(len(data)-1)] != 0xFC {
+		return fmt.Errorf("bad response")
+	}
+	if len(data) < 6 {
+		return fmt.Errorf("bad response")
+	}
+	xsum := csum(data[:len(data)-3])
+	if xsum != data[len(data)-2] {
+		return fmt.Errorf("bad response, checksum error")
+	}
+	return nil
+
+}
+
+func (d *deviceIO) ReadData(bank byte, length int) ([]byte, error) {
+	d.mux.Lock()
+	defer d.mux.Unlock()
+	d.SendFrame(0x10, bank, nil, length)
 	buf := make([]byte, 128)
 	n, err := d.port.Read(buf)
 	if err != nil {
@@ -67,5 +89,13 @@ func (d *deviceIO) ReadData(bank byte, len int) ([]byte, error) {
 	if n == 0 {
 		return nil, fmt.Errorf("not data, deviceIo")
 	}
-	return buf[:n], nil
+	if err := verify(buf[:n]); err != nil {
+		return nil, err
+	}
+
+	resp := buf[:n]
+
+	// fmt.Printf("sendframe resp: [% X]\n", resp)
+
+	return resp[4 : len(resp)-2], nil
 }
