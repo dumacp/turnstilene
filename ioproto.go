@@ -34,7 +34,7 @@ func (d *deviceIO) SetAddress(addres byte) {
 func csum(data []byte) byte {
 	csum := byte(0)
 	for _, v := range data {
-		csum = (csum ^ v) & 0xFF
+		csum ^= v
 	}
 	csum = (-csum & 0xFF)
 	return csum
@@ -61,14 +61,14 @@ func (d *deviceIO) SendFrame(funtion, bank byte, data []byte, len int) error {
 
 func verify(data []byte) error {
 	if data[(len(data)-1)] != 0xFC {
-		return fmt.Errorf("bad response")
+		return fmt.Errorf("bad response, data -> [ % X ]", data)
 	}
 	if len(data) < 6 {
-		return fmt.Errorf("bad response")
+		return fmt.Errorf("bad response, data -> [ % X ]", data)
 	}
-	xsum := csum(data[:len(data)-3])
+	xsum := csum(data[:len(data)-2])
 	if xsum != data[len(data)-2] {
-		return fmt.Errorf("bad response, checksum error")
+		return fmt.Errorf("bad response, checksum error; csum -> %02X,  data -> [ % X ]", xsum, data)
 	}
 	return nil
 
