@@ -100,6 +100,9 @@ func (d *device) Listen() chan Event {
 						break
 					}
 				}
+				for i, v := range resp {
+					memArray[i] = v
+				}
 				if eq {
 					continue
 				}
@@ -126,35 +129,48 @@ func (d *device) Listen() chan Event {
 					memInputs.alarm = alarm
 					first = false
 				}
-				if inputA != memInputs.inputA {
+				if inputA > memInputs.inputA && inputA-memInputs.inputA < 30 {
 					select {
 					case ch <- Event{
 						Type:  InputA,
 						Value: inputA,
 					}:
-					default:
+					case <-time.After(3 * time.Second):
 						log.Println("timeout send event")
 					}
-					memInputs.inputA = inputA
+
+				} else {
+					if !first {
+						log.Printf("inputA-memInputs.inputA is greater than 30: %d - %d",
+							inputA, memInputs.inputA)
+					}
 				}
-				if inputB != memInputs.inputB {
+				memInputs.inputA = inputA
+				if inputB > memInputs.inputB && inputB-memInputs.inputB < 30 {
 					select {
 					case ch <- Event{
 						Type:  InputB,
 						Value: inputB,
 					}:
-					default:
+					case <-time.After(3 * time.Second):
 						log.Println("timeout send event")
 					}
-					memInputs.inputB = inputB
+
+				} else {
+					if !first {
+						log.Printf("inputB-memInputs.inputB is greater than 30: %d - %d",
+							inputB, memInputs.inputB)
+					}
 				}
+				memInputs.inputB = inputB
+
 				if failure != memInputs.failure {
 					select {
 					case ch <- Event{
 						Type:  Failure,
 						Value: failure,
 					}:
-					default:
+					case <-time.After(3 * time.Second):
 						log.Println("timeout send event")
 					}
 					memInputs.failure = failure
@@ -165,7 +181,7 @@ func (d *device) Listen() chan Event {
 						Type:  Battery,
 						Value: battery,
 					}:
-					default:
+					case <-time.After(3 * time.Second):
 						log.Println("timeout send event")
 					}
 					memInputs.battery = battery
@@ -176,7 +192,7 @@ func (d *device) Listen() chan Event {
 						Type:  Alarm,
 						Value: alarm,
 					}:
-					default:
+					case <-time.After(3 * time.Second):
 						log.Println("timeout send event")
 					}
 					memInputs.alarm = alarm
