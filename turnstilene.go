@@ -42,7 +42,7 @@ type Event struct {
 type Device interface {
 	Listen() chan Event
 	Registers() ([]uint32, error)
-	Config() *serial.Config
+	ReadTimeout() time.Duration
 }
 
 type device struct {
@@ -109,7 +109,7 @@ func (d *device) Listen() chan Event {
 			if err != nil {
 				log.Println(err)
 				if errors.Is(err, io.EOF) {
-					if len(resp) <= 0 && time.Since(tr) < d.Config().ReadTimeout/20 {
+					if len(resp) <= 0 && time.Since(tr) < d.ReadTimeout()/20 {
 						if memCountErrors > LimitErrors {
 							select {
 							case ch <- Event{
@@ -249,8 +249,11 @@ func (d *device) Listen() chan Event {
 	return ch
 }
 
-func (d *device) Config() *serial.Config {
-	return d.config
+func (d *device) ReadTimeout() time.Duration {
+	if d.config != nil {
+		return d.config.ReadTimeout
+	}
+	return 0
 }
 
 func (d *device) Registers() ([]uint32, error) {
@@ -261,7 +264,7 @@ func (d *device) Registers() ([]uint32, error) {
 	if err != nil {
 		log.Println(err)
 		if errors.Is(err, io.EOF) {
-			if len(resp) <= 0 && time.Since(t1) < d.Config().ReadTimeout/20 {
+			if len(resp) <= 0 && time.Since(t1) < d.ReadTimeout()/20 {
 				return nil, err
 			}
 		} else {
