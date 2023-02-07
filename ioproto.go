@@ -7,7 +7,7 @@ import (
 	"github.com/tarm/serial"
 )
 
-//DeviceIO interface to deviceIO
+// DeviceIO interface to deviceIO
 type DeviceIO interface {
 	SendFrame(funtion, bank byte, data []byte, len int) error
 	ReadData(bank byte, len int) ([]byte, error)
@@ -20,7 +20,7 @@ type deviceIO struct {
 	mux     sync.Mutex
 }
 
-//NewDeviceIO create new deviceIO
+// NewDeviceIO create new deviceIO
 func NewDeviceIO(port *serial.Port) (DeviceIO, error) {
 	dev := &deviceIO{}
 	dev.port = port
@@ -84,7 +84,7 @@ func (d *deviceIO) ReadData(bank byte, length int) ([]byte, error) {
 		return nil, err
 	}
 	if n < 0 {
-		return nil, fmt.Errorf("Error read data, deviceIo")
+		return nil, fmt.Errorf("error read data, deviceIo")
 	}
 	if n == 0 {
 		return nil, fmt.Errorf("not data, deviceIo")

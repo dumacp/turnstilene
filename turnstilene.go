@@ -2,13 +2,15 @@ package turnstilene
 
 import (
 	"encoding/binary"
+	"errors"
+	"io"
 	"log"
 	"time"
 
 	"github.com/tarm/serial"
 )
 
-//Events enum
+// Events enum
 type Events int
 
 const (
@@ -22,25 +24,33 @@ const (
 	Alarm
 	//Battery Event
 	Battery
+	//Error Event
+	Error
 )
 
-//Event event data
+const (
+	LimitErrors = 3
+)
+
+// Event event data
 type Event struct {
 	Type  Events
 	Value interface{}
 }
 
-//Device interface to device
+// Device interface to device
 type Device interface {
 	Listen() chan Event
 	Registers() ([]uint32, error)
+	Config() *serial.Config
 }
 
 type device struct {
-	io DeviceIO
+	io     DeviceIO
+	config *serial.Config
 }
 
-//Turnstile create new device
+// Turnstile create new device
 func Turnstile(port string, baudRate int) (Device, error) {
 	config := &serial.Config{
 		Name:        port,
@@ -54,16 +64,20 @@ func Turnstile(port string, baudRate int) (Device, error) {
 	}
 
 	io, err := NewDeviceIO(p)
+	if err != nil {
+		return nil, err
+	}
 	io.SetAddress(0x82)
 
 	dev := &device{
-		io,
+		io:     io,
+		config: config,
 	}
 
 	return dev, nil
 }
 
-//Listen listen device
+// Listen listen device
 func (d *device) Listen() chan Event {
 
 	first := true
@@ -71,7 +85,8 @@ func (d *device) Listen() chan Event {
 	lenData := 14 //length data
 
 	memArray := make([]byte, lenData)
-	t1 := time.Tick(1 * time.Second)
+	t1 := time.NewTicker(1 * time.Second)
+	defer t1.Stop()
 	ch := make(chan Event, 4)
 
 	var memInputs = struct {
@@ -82,133 +97,176 @@ func (d *device) Listen() chan Event {
 		alarm   bool
 	}{}
 
+	memCountErrors := 0
+
 	go func() {
-		for {
-			select {
-			case <-t1:
-				resp, err := d.io.ReadData(byte(0x10), lenData)
-				// fmt.Printf("sendframe resp: [% X]\n", resp)
-				if err != nil {
-					log.Println(err)
-					continue
-				}
+		defer close(ch)
+		for range t1.C {
+			tr := time.Now()
+			resp, err := d.io.ReadData(byte(0x10), lenData)
+			// fmt.Printf("sendframe resp: [% X]\n", resp)
 
-				eq := true
-				for i, v := range resp {
-					if v != memArray[i] {
-						eq = false
-						break
+			if err != nil {
+				log.Println(err)
+				if errors.Is(err, io.EOF) {
+					if len(resp) <= 0 && time.Since(tr) < d.Config().ReadTimeout/20 {
+						if memCountErrors > LimitErrors {
+							select {
+							case ch <- Event{
+								Type:  Error,
+								Value: err,
+							}:
+							case <-time.After(3 * time.Second):
+								log.Println("timeout send event")
+							}
+							return
+						}
+						continue
+
 					}
-				}
-				for i, v := range resp {
-					memArray[i] = v
-				}
-				if eq {
-					continue
-				}
-				if len(resp) < lenData {
-					continue
-				}
-				inputA := binary.LittleEndian.Uint32(resp[0:4])
-				inputB := binary.LittleEndian.Uint32(resp[4:8])
-				failure := binary.LittleEndian.Uint32(resp[8:12])
-
-				alarm := false
-				if resp[12] > 0x00 {
-					alarm = true
-				}
-				battery := false
-				if resp[13] > 0x00 {
-					battery = true
-				}
-				if first {
-					memInputs.inputA = inputA
-					memInputs.inputB = inputB
-					memInputs.failure = failure
-					memInputs.battery = battery
-					memInputs.alarm = alarm
-					first = false
-				}
-				if inputA > memInputs.inputA && inputA-memInputs.inputA < 30 {
-					select {
-					case ch <- Event{
-						Type:  InputA,
-						Value: inputA,
-					}:
-					case <-time.After(3 * time.Second):
-						log.Println("timeout send event")
-					}
-
 				} else {
-					if !first {
-						log.Printf("inputA-memInputs.inputA is greater than 30: %d - %d",
-							inputA, memInputs.inputA)
+					if memCountErrors > LimitErrors {
+						select {
+						case ch <- Event{
+							Type:  Error,
+							Value: err,
+						}:
+						case <-time.After(3 * time.Second):
+							log.Println("timeout send event")
+						}
+						return
 					}
+					continue
 				}
+			}
+
+			eq := true
+			for i, v := range resp {
+				if v != memArray[i] {
+					eq = false
+					break
+				}
+			}
+			for i, v := range resp {
+				memArray[i] = v
+			}
+			if eq {
+				continue
+			}
+			if len(resp) < lenData {
+				continue
+			}
+			inputA := binary.LittleEndian.Uint32(resp[0:4])
+			inputB := binary.LittleEndian.Uint32(resp[4:8])
+			failure := binary.LittleEndian.Uint32(resp[8:12])
+
+			alarm := false
+			if resp[12] > 0x00 {
+				alarm = true
+			}
+			battery := false
+			if resp[13] > 0x00 {
+				battery = true
+			}
+			if first {
 				memInputs.inputA = inputA
-				if inputB > memInputs.inputB && inputB-memInputs.inputB < 30 {
-					select {
-					case ch <- Event{
-						Type:  InputB,
-						Value: inputB,
-					}:
-					case <-time.After(3 * time.Second):
-						log.Println("timeout send event")
-					}
-
-				} else {
-					if !first {
-						log.Printf("inputB-memInputs.inputB is greater than 30: %d - %d",
-							inputB, memInputs.inputB)
-					}
-				}
 				memInputs.inputB = inputB
+				memInputs.failure = failure
+				memInputs.battery = battery
+				memInputs.alarm = alarm
+				first = false
+			}
+			if inputA > memInputs.inputA && inputA-memInputs.inputA < 30 {
+				select {
+				case ch <- Event{
+					Type:  InputA,
+					Value: inputA,
+				}:
+				case <-time.After(3 * time.Second):
+					log.Println("timeout send event")
+				}
 
-				if failure != memInputs.failure {
-					select {
-					case ch <- Event{
-						Type:  Failure,
-						Value: failure,
-					}:
-					case <-time.After(3 * time.Second):
-						log.Println("timeout send event")
-					}
-					memInputs.failure = failure
+			} else {
+				if !first {
+					log.Printf("inputA-memInputs.inputA is greater than 30: %d - %d",
+						inputA, memInputs.inputA)
 				}
-				if battery != memInputs.battery {
-					select {
-					case ch <- Event{
-						Type:  Battery,
-						Value: battery,
-					}:
-					case <-time.After(3 * time.Second):
-						log.Println("timeout send event")
-					}
-					memInputs.battery = battery
+			}
+			memInputs.inputA = inputA
+			if inputB > memInputs.inputB && inputB-memInputs.inputB < 30 {
+				select {
+				case ch <- Event{
+					Type:  InputB,
+					Value: inputB,
+				}:
+				case <-time.After(3 * time.Second):
+					log.Println("timeout send event")
 				}
-				if alarm != memInputs.alarm {
-					select {
-					case ch <- Event{
-						Type:  Alarm,
-						Value: alarm,
-					}:
-					case <-time.After(3 * time.Second):
-						log.Println("timeout send event")
-					}
-					memInputs.alarm = alarm
+
+			} else {
+				if !first {
+					log.Printf("inputB-memInputs.inputB is greater than 30: %d - %d",
+						inputB, memInputs.inputB)
 				}
+			}
+			memInputs.inputB = inputB
+
+			if failure != memInputs.failure {
+				select {
+				case ch <- Event{
+					Type:  Failure,
+					Value: failure,
+				}:
+				case <-time.After(3 * time.Second):
+					log.Println("timeout send event")
+				}
+				memInputs.failure = failure
+			}
+			if battery != memInputs.battery {
+				select {
+				case ch <- Event{
+					Type:  Battery,
+					Value: battery,
+				}:
+				case <-time.After(3 * time.Second):
+					log.Println("timeout send event")
+				}
+				memInputs.battery = battery
+			}
+			if alarm != memInputs.alarm {
+				select {
+				case ch <- Event{
+					Type:  Alarm,
+					Value: alarm,
+				}:
+				case <-time.After(3 * time.Second):
+					log.Println("timeout send event")
+				}
+				memInputs.alarm = alarm
 			}
 		}
 	}()
 	return ch
 }
 
+func (d *device) Config() *serial.Config {
+	return d.config
+}
+
 func (d *device) Registers() ([]uint32, error) {
 	lenData := 14 //length data
+	t1 := time.Now()
 	resp, err := d.io.ReadData(byte(0x10), lenData)
+
 	if err != nil {
 		log.Println(err)
-		return nil, err
+		if errors.Is(err, io.EOF) {
+			if len(resp) <= 0 && time.Since(t1) < d.Config().ReadTimeout/20 {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
 	}
 	inputA := binary.LittleEndian.Uint32(resp[0:4])
 	inputB := binary.LittleEndian.Uint32(resp[4:8])
