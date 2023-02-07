@@ -108,34 +108,25 @@ func (d *device) Listen() chan Event {
 
 			if err != nil {
 				log.Println(err)
+				if memCountErrors > LimitErrors {
+					select {
+					case ch <- Event{
+						Type:  Error,
+						Value: err,
+					}:
+					case <-time.After(3 * time.Second):
+						log.Println("timeout send event")
+					}
+					return
+				}
 				if errors.Is(err, io.EOF) {
 					if len(resp) <= 0 && time.Since(tr) < d.ReadTimeout()/20 {
-						if memCountErrors > LimitErrors {
-							select {
-							case ch <- Event{
-								Type:  Error,
-								Value: err,
-							}:
-							case <-time.After(3 * time.Second):
-								log.Println("timeout send event")
-							}
-							return
-						}
+						memCountErrors++
 						continue
 
 					}
 				} else {
-					if memCountErrors > LimitErrors {
-						select {
-						case ch <- Event{
-							Type:  Error,
-							Value: err,
-						}:
-						case <-time.After(3 * time.Second):
-							log.Println("timeout send event")
-						}
-						return
-					}
+					memCountErrors++
 					continue
 				}
 			}
